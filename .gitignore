@@ -1,0 +1,33 @@
+# Kaggle competition raw data (large)
+train/
+test/
+metadata.csv
+sample_submission.csv
+test_mask.csv
+
+# Common generated outputs
+submissions/
+outputs/
+artifacts/
+checkpoints/
+models/
+runs/
+logs/
+*.log
+
+# Python cache / environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
