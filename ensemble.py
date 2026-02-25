@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,9 @@ def load_or_run_gaussian_predictions(config: Config, overwrite: bool = False) ->
 def load_or_prepare_mae_predictions(config: Config, run_if_missing: bool = False, overwrite: bool = False) -> pd.DataFrame:
     """Load cached MAE predictions or optionally trigger TTT generation."""
     path = config.results_dir / "mae_predictions.csv"
-    if path.exists() and not overwrite:
+    # `--overwrite` only makes sense for MAE if we are also allowed to regenerate via `--run_mae_if_missing`.
+    # Otherwise, prefer loading the cached consolidated CSV instead of raising.
+    if path.exists() and (not overwrite or not run_if_missing):
         LOGGER.info("Loading cached MAE predictions from %s", path)
         return pd.read_csv(path)
     if not run_if_missing:
@@ -171,6 +174,7 @@ def evaluate_mae_nmse_on_artificial_masks(test_session_dict: dict[str, Any], con
 def estimate_session_weights(
     config: Config,
     pillar1_only: bool = False,
+    gate_mae_if_worse: bool = False,
 ) -> tuple[dict[str, dict[str, float]], pd.DataFrame]:
     """Estimate per-session pillar weights using artificial masking on unmasked trials.
 
@@ -181,13 +185,16 @@ def estimate_session_weights(
     records: list[dict[str, Any]] = []
     weights: dict[str, dict[str, float]] = {}
 
-    for session_id in tqdm(session_ids, desc="Ensemble weights"):
+    for i, session_id in enumerate(tqdm(session_ids, desc="Ensemble weights"), start=1):
+        LOGGER.info("Evaluating ensemble weights for %s (%d/%d)", session_id, i, len(session_ids))
         test_session = load_test_session(session_id, config)
         gaussian_nmse = evaluate_gaussian_nmse_on_artificial_masks(test_session, config)
         mae_nmse = float("inf") if pillar1_only else evaluate_mae_nmse_on_artificial_masks(test_session, config)
         scores = {PILLAR_GAUSSIAN: gaussian_nmse, PILLAR_MAE: mae_nmse}
         w = _compute_inverse_nmse_weights(scores, eps=config.ensemble_weight_eps)
         if pillar1_only:
+            w = {PILLAR_GAUSSIAN: 1.0, PILLAR_MAE: 0.0}
+        elif gate_mae_if_worse and (not np.isfinite(mae_nmse) or mae_nmse >= gaussian_nmse):
             w = {PILLAR_GAUSSIAN: 1.0, PILLAR_MAE: 0.0}
         weights[session_id] = w
         records.append(
@@ -207,6 +214,56 @@ def estimate_session_weights(
         json.dump(weights, f, indent=2)
     LOGGER.info("Saved ensemble weights to %s", config.results_dir / "ensemble_weights.json")
     return weights, summary
+
+
+def load_cached_session_weights(config: Config) -> tuple[dict[str, dict[str, float]], pd.DataFrame]:
+    """Load cached per-session ensemble weights and summary from disk."""
+    weights_path = config.results_dir / "ensemble_weights.json"
+    summary_path = config.results_dir / "ensemble_session_summary.csv"
+    if not weights_path.exists() or not summary_path.exists():
+        raise FileNotFoundError(f"Missing cached weights artifacts: {weights_path} and/or {summary_path}")
+
+    with weights_path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid ensemble weights JSON payload in {weights_path}")
+
+    weights: dict[str, dict[str, float]] = {}
+    for session_id, mapping in payload.items():
+        if not isinstance(mapping, dict):
+            raise ValueError(f"Invalid weight record for session {session_id!r} in {weights_path}")
+        weights[str(session_id)] = {
+            PILLAR_GAUSSIAN: float(mapping.get(PILLAR_GAUSSIAN, 0.0)),
+            PILLAR_MAE: float(mapping.get(PILLAR_MAE, 0.0)),
+        }
+
+    summary_df = pd.read_csv(summary_path)
+    return weights, summary_df
+
+
+def apply_mae_gate_from_summary(
+    weights_by_session: dict[str, dict[str, float]],
+    summary_df: pd.DataFrame,
+) -> dict[str, dict[str, float]]:
+    """Return a copy of weights with MAE zeroed where cached summary shows no proxy win."""
+    required = {"session_id", "gaussian_nmse_est", "mae_nmse_est"}
+    if summary_df.empty or not required.issubset(set(summary_df.columns)):
+        return weights_by_session
+
+    out: dict[str, dict[str, float]] = {
+        str(sid): {PILLAR_GAUSSIAN: float(w.get(PILLAR_GAUSSIAN, 0.0)), PILLAR_MAE: float(w.get(PILLAR_MAE, 0.0))}
+        for sid, w in weights_by_session.items()
+    }
+    gated = 0
+    for row in summary_df.itertuples(index=False):
+        sid = str(getattr(row, "session_id"))
+        g_nmse = float(getattr(row, "gaussian_nmse_est"))
+        m_nmse = float(getattr(row, "mae_nmse_est"))
+        if (not np.isfinite(m_nmse)) or m_nmse >= g_nmse:
+            out[sid] = {PILLAR_GAUSSIAN: 1.0, PILLAR_MAE: 0.0}
+            gated += 1
+    LOGGER.info("Applied cached-summary MAE gate to %d sessions", gated)
+    return out
 
 
 
@@ -327,8 +384,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", choices=["local", "hpc"], default="local")
     parser.add_argument("--run_mae_if_missing", action="store_true", help="Run TTT if MAE predictions are missing")
     parser.add_argument("--disable_smoothing", action="store_true")
+    parser.add_argument("--smooth_sigma", type=float, default=None, help="Override temporal smoothing sigma")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--pillar1_only", action="store_true", help="Use only Gaussian pillar but still run post-processing")
+    parser.add_argument(
+        "--use_cached_weights",
+        action="store_true",
+        help="Reuse results/ensemble_weights.json and results/ensemble_session_summary.csv if present",
+    )
+    parser.add_argument(
+        "--gate_mae_if_worse",
+        action="store_true",
+        help="Set MAE weight to 0 for sessions where MAE proxy NMSE is not better than Gaussian",
+    )
     return parser.parse_args()
 
 
@@ -338,10 +406,16 @@ def main() -> None:
     args = _parse_args()
     config = get_config(args.config)
     ensure_output_dirs(config)
-    if args.disable_smoothing:
-        from dataclasses import replace
-
-        config = replace(config, ensemble_enable_smoothing=False)
+    if args.disable_smoothing or args.smooth_sigma is not None:
+        updates: dict[str, Any] = {}
+        if args.disable_smoothing:
+            updates["ensemble_enable_smoothing"] = False
+        if args.smooth_sigma is not None:
+            sigma = float(args.smooth_sigma)
+            updates["ensemble_smooth_sigma"] = sigma
+            if sigma <= 0:
+                updates["ensemble_enable_smoothing"] = False
+        config = replace(config, **updates)
     setup_logging(config.log_level, config.logs_dir / "ensemble.log")
     preflight_validate_submission_indices(config)
 
@@ -354,8 +428,27 @@ def main() -> None:
         mae_raw = load_or_prepare_mae_predictions(config, run_if_missing=args.run_mae_if_missing, overwrite=args.overwrite)
         mae_df = validate_prediction_rows(mae_raw, test_mask_df, label="MAE")
 
-    weights_by_session, summary_df = estimate_session_weights(config, pillar1_only=args.pillar1_only)
-    LOGGER.info("Estimated ensemble weights for %d sessions", len(weights_by_session))
+    if args.pillar1_only:
+        weights_by_session: dict[str, dict[str, float]] = {}
+        summary_df = pd.DataFrame()
+        LOGGER.info("Skipping ensemble weight estimation in --pillar1_only mode")
+    elif args.use_cached_weights:
+        try:
+            weights_by_session, summary_df = load_cached_session_weights(config)
+            LOGGER.info("Loaded cached ensemble weights for %d sessions", len(weights_by_session))
+            if args.gate_mae_if_worse:
+                weights_by_session = apply_mae_gate_from_summary(weights_by_session, summary_df)
+        except Exception as exc:
+            LOGGER.warning("Unable to load cached ensemble weights (%s); recomputing", exc)
+            weights_by_session, summary_df = estimate_session_weights(
+                config, pillar1_only=False, gate_mae_if_worse=args.gate_mae_if_worse
+            )
+            LOGGER.info("Estimated ensemble weights for %d sessions", len(weights_by_session))
+    else:
+        weights_by_session, summary_df = estimate_session_weights(
+            config, pillar1_only=False, gate_mae_if_worse=args.gate_mae_if_worse
+        )
+        LOGGER.info("Estimated ensemble weights for %d sessions", len(weights_by_session))
 
     combined = combine_predictions(gaussian_df, mae_df, weights_by_session)
     combined = apply_session_clipping(combined, config)
