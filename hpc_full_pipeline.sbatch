@@ -64,3 +64,13 @@ fi
 
 echo "Running: ${CMD[*]}"
 "${CMD[@]}"
+
+if [[ -n "${SAVE_SUBMISSION_AS:-}" ]]; then
+  mkdir -p "${REPO_DIR}/submissions"
+  if [[ ! -f "${REPO_DIR}/submission.csv" ]]; then
+    echo "SAVE_SUBMISSION_AS requested but submission.csv not found" >&2
+    exit 1
+  fi
+  cp -f "${REPO_DIR}/submission.csv" "${REPO_DIR}/submissions/${SAVE_SUBMISSION_AS}"
+  echo "Saved submission snapshot to ${REPO_DIR}/submissions/${SAVE_SUBMISSION_AS}"
+fi
