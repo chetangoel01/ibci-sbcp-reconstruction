@@ -69,8 +69,32 @@ fi
 if [[ -n "${EPOCHS:-}" ]]; then
   CMD+=(--epochs "${EPOCHS}")
 fi
+if [[ -n "${SEED:-}" ]]; then
+  CMD+=(--seed "${SEED}")
+fi
 if [[ -n "${MAX_STEPS_PER_EPOCH:-}" ]]; then
   CMD+=(--max_steps_per_epoch "${MAX_STEPS_PER_EPOCH}")
+fi
+if [[ -n "${MAE_LR:-}" ]]; then
+  CMD+=(--mae_lr "${MAE_LR}")
+fi
+if [[ -n "${MAE_WARMUP_EPOCHS:-}" ]]; then
+  CMD+=(--mae_warmup_epochs "${MAE_WARMUP_EPOCHS}")
+fi
+if [[ -n "${MAE_MASK_RATIO:-}" ]]; then
+  CMD+=(--mae_mask_ratio "${MAE_MASK_RATIO}")
+fi
+if [[ -n "${MAE_WEIGHT_DECAY:-}" ]]; then
+  CMD+=(--mae_weight_decay "${MAE_WEIGHT_DECAY}")
+fi
+if [[ -n "${MAE_DROPOUT:-}" ]]; then
+  CMD+=(--mae_dropout "${MAE_DROPOUT}")
+fi
+if [[ -n "${MAE_CONTEXT_BINS:-}" ]]; then
+  CMD+=(--mae_context_bins "${MAE_CONTEXT_BINS}")
+fi
+if [[ -n "${MAE_BATCH_SIZE:-}" ]]; then
+  CMD+=(--mae_batch_size "${MAE_BATCH_SIZE}")
 fi
 if [[ -n "${N_TRIALS:-}" && "${SWEEP}" == "1" ]]; then
   CMD+=(--n_trials "${N_TRIALS}")

@@ -8,7 +8,7 @@ import json
 import logging
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -512,6 +512,7 @@ def train_one_run(
     val_ids = corpus.val_ids
 
     ckpt_best_path = config.checkpoints_dir / "mae_pretrained.pt"
+    ckpt_latest_path = config.checkpoints_dir / "mae_pretrain_latest.pt"
     epoch_ckpt_dir = config.checkpoints_dir / "pretrain_epochs"
     epoch_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -582,6 +583,18 @@ def train_one_run(
                 train_session_days=[corpus.sessions[sid].day for sid in sorted(corpus.train_ids)],
             )
             LOGGER.info("Saved best checkpoint to %s", ckpt_best_path)
+
+        # Always persist a resumable "latest" checkpoint to reduce lost work on walltime timeout.
+        _save_checkpoint(
+            ckpt_latest_path,
+            model,
+            optimizer,
+            epoch,
+            config,
+            best_val_nmse,
+            train_session_ids=sorted(corpus.train_ids),
+            train_session_days=[corpus.sessions[sid].day for sid in sorted(corpus.train_ids)],
+        )
 
         if (epoch + 1) % 10 == 0 or epoch == effective_epochs - 1:
             epoch_path = epoch_ckpt_dir / f"mae_epoch_{epoch+1:03d}.pt"
@@ -680,18 +693,44 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--n_trials", type=int, default=None, help="Optuna trials")
     parser.add_argument("--fast_dev_run", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--mae_lr", type=float, default=None)
+    parser.add_argument("--mae_warmup_epochs", type=int, default=None)
+    parser.add_argument("--mae_mask_ratio", type=float, default=None)
+    parser.add_argument("--mae_weight_decay", type=float, default=None)
+    parser.add_argument("--mae_dropout", type=float, default=None)
+    parser.add_argument("--mae_context_bins", type=int, default=None)
+    parser.add_argument("--mae_batch_size", type=int, default=None)
     return parser.parse_args()
 
+
+def _apply_pretrain_cli_overrides(config: Config, args: argparse.Namespace) -> Config:
+    """Apply explicit pretraining hyperparameter overrides from CLI args."""
+    updates: dict[str, Any] = {}
+    for key in (
+        "mae_lr",
+        "mae_warmup_epochs",
+        "mae_mask_ratio",
+        "mae_weight_decay",
+        "mae_dropout",
+        "mae_context_bins",
+        "mae_batch_size",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            updates[key] = value
+    if not updates:
+        return config
+    LOGGER.info("Applying CLI pretrain overrides: %s", ", ".join(f"{k}={v}" for k, v in sorted(updates.items())))
+    return replace(config, **updates)
 
 
 def train_main(args: argparse.Namespace) -> None:
     """Main entry point for a normal pretraining run."""
     config = get_config(args.config)
     if args.seed is not None:
-        from dataclasses import replace
-
         config = replace(config, seed=int(args.seed))
     config = load_sweep_overrides(config)
+    config = _apply_pretrain_cli_overrides(config, args)
     ensure_output_dirs(config)
     setup_logging(config.log_level, config.logs_dir / "pillar2_mae_train.log")
     preflight_validate_submission_indices(config)
