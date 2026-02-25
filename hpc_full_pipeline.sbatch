@@ -4,7 +4,7 @@
 #SBATCH --output=logs/slurm_full_pipeline_%j.log
 #SBATCH --error=logs/slurm_full_pipeline_%j.log
 #SBATCH --mem=32G
-#SBATCH --time=01:00:00
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=8
 
 set -euo pipefail
@@ -46,8 +46,17 @@ fi
 if [[ "${RUN_MAE_IF_MISSING:-0}" == "1" ]]; then
   CMD+=(--run_mae_if_missing)
 fi
+if [[ "${USE_CACHED_WEIGHTS:-0}" == "1" ]]; then
+  CMD+=(--use_cached_weights)
+fi
+if [[ "${GATE_MAE_IF_WORSE:-0}" == "1" ]]; then
+  CMD+=(--gate_mae_if_worse)
+fi
 if [[ "${DISABLE_SMOOTHING:-0}" == "1" ]]; then
   CMD+=(--disable_smoothing)
+fi
+if [[ -n "${SMOOTH_SIGMA:-}" ]]; then
+  CMD+=(--smooth_sigma "${SMOOTH_SIGMA}")
 fi
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
   CMD+=(--overwrite)

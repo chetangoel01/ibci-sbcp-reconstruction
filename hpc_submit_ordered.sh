@@ -13,7 +13,7 @@ SKIP_PRETRAIN="${SKIP_PRETRAIN:-0}"
 SKIP_TTT="${SKIP_TTT:-0}"
 SKIP_ENSEMBLE="${SKIP_ENSEMBLE:-0}"
 OVERWRITE_TTT="${OVERWRITE_TTT:-1}"
-OVERWRITE_ENSEMBLE="${OVERWRITE_ENSEMBLE:-1}"
+OVERWRITE_ENSEMBLE="${OVERWRITE_ENSEMBLE:-0}"
 FORCE_CONSOLIDATE_TTT="${FORCE_CONSOLIDATE_TTT:-0}"
 
 PRETRAIN_JOBID=""
@@ -35,7 +35,7 @@ Options:
   --skip-ttt                 Skip TTT submission (assume TTT outputs exist)
   --skip-ensemble            Skip final ensemble submission
   --no-overwrite-ttt         Do not pass OVERWRITE=1 to TTT array jobs
-  --no-overwrite-ensemble    Do not pass OVERWRITE=1 to ensemble job
+  --no-overwrite-ensemble    Do not pass OVERWRITE=1 to ensemble job (default)
   --force-consolidate-ttt    Force consolidation of results/ttt_predictions/*.csv before ensemble
   -h, --help                 Show help
 
