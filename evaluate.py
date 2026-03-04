@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -227,6 +226,11 @@ def analyze_by_channel(predictions_df: pd.DataFrame, solution_df: pd.DataFrame, 
 
 def plot_drift_vs_nmse(predictions_df: pd.DataFrame, solution_df: pd.DataFrame, config: Config) -> Path:
     """Plot per-session drift gap vs NMSE and save to `results/plots`."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover - optional dependency for plotting only
+        raise RuntimeError("matplotlib is required for --analysis-from-files plotting outputs") from exc
+
     md = load_metadata(config)[["session_id", "days_from_nearest_train"]].copy()
     merged = solution_df.merge(predictions_df[["sample_id", "predicted_sbp"]], on="sample_id", how="left")
     if merged["predicted_sbp"].isna().any():

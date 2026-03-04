@@ -58,6 +58,23 @@ class TestSessionAdaptData:
     trial_ends_concat: np.ndarray
 
 
+def _sanitize_non_finite_predictions(
+    values: np.ndarray,
+    *,
+    label: str,
+    fill_value: float = 0.0,
+) -> np.ndarray:
+    """Replace non-finite prediction values with the z-score mean fallback."""
+    arr = np.asarray(values, dtype=np.float32)
+    bad = ~np.isfinite(arr)
+    if bad.any():
+        n_bad = int(bad.sum())
+        LOGGER.warning("%s produced %d non-finite values; replacing with %.3f", label, n_bad, fill_value)
+        arr = arr.copy()
+        arr[bad] = np.float32(fill_value)
+    return arr
+
+
 
 def _select_train_session_embedding_metadata(config: Config, checkpoint: dict[str, Any]) -> tuple[list[str], list[int]]:
     ids = checkpoint.get("train_session_ids")
@@ -269,6 +286,7 @@ def predict_dense_for_test_session(
         days = torch.full((x.shape[0],), float(adapt.day), device=device, dtype=torch.float32)
         out = model(sbp_window=x, mask=m, session_days=days)
         preds = out["pred_values"].cpu().numpy()
+        preds = _sanitize_non_finite_predictions(preds, label=f"TTT inference for {adapt.session_id}")
         idx = out["masked_channel_idx"].cpu().numpy()
         pad = out["masked_padding_mask"].cpu().numpy().astype(bool)
         for i, row in enumerate(rows.tolist()):
@@ -478,6 +496,7 @@ def evaluate_session_nmse_on_artificial_masks(test_session_dict: dict[str, Any],
             days = torch.full((x.shape[0],), float(adapt.day), device=device, dtype=torch.float32)
             out = model(sbp_window=x, mask=m, session_days=days)
             preds = out["pred_values"].cpu().numpy()
+            preds = _sanitize_non_finite_predictions(preds, label=f"Artificial-mask eval for {session_id}")
             idx = out["masked_channel_idx"].cpu().numpy()
             pad = out["masked_padding_mask"].cpu().numpy().astype(bool)
             for j, row in enumerate(r.tolist()):

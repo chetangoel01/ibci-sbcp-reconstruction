@@ -78,6 +78,28 @@ class Corpus:
     val_ids: list[str]
 
 
+def _sanitize_non_finite_predictions(
+    values: np.ndarray,
+    *,
+    label: str,
+    fill_value: float = 0.0,
+) -> np.ndarray:
+    """Replace non-finite prediction values with a safe fallback.
+
+    The MAE operates in z-scored space, so `0.0` corresponds to the per-channel mean.
+    Falling back to the mean is preferable to crashing training or validation when a
+    subset of predictions becomes non-finite.
+    """
+    arr = np.asarray(values, dtype=np.float32)
+    bad = ~np.isfinite(arr)
+    if bad.any():
+        n_bad = int(bad.sum())
+        LOGGER.warning("%s produced %d non-finite values; replacing with %.3f", label, n_bad, fill_value)
+        arr = arr.copy()
+        arr[bad] = np.float32(fill_value)
+    return arr
+
+
 
 def compute_visible_token_budget(context_bins: int, n_channels: int, masked_channels: int) -> int:
     """Return visible token count per sample for the current MAE masking scheme."""
@@ -396,6 +418,7 @@ def predict_dense_with_model_for_session(
 
         out = model(sbp_window=x, mask=m, session_days=session_day_batch)
         preds = out["pred_values"].detach().cpu().numpy()
+        preds = _sanitize_non_finite_predictions(preds, label=f"Validation forward for {session.session_id}")
         masked_idx = out["masked_channel_idx"].detach().cpu().numpy()
         pad = out["masked_padding_mask"].detach().cpu().numpy().astype(bool)
         for i, row in enumerate(rows.tolist()):
@@ -536,6 +559,9 @@ def train_one_run(
             batch = _sample_pretrain_batch(corpus, train_ids, config, rng, device)
             optimizer.zero_grad(set_to_none=True)
             loss, metrics = _model_forward_loss(model, batch)
+            if not torch.isfinite(loss):
+                LOGGER.warning("Skipping non-finite training loss at epoch %d", epoch + 1)
+                continue
             loss.backward()
             if config.mae_grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.mae_grad_clip)
