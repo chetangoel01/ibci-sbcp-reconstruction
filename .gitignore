@@ -9,6 +9,7 @@ test_mask.csv
 submissions/
 outputs/
 artifacts/
+phase2_outputs/
 checkpoints/
 models/
 runs/
@@ -30,4 +31,3 @@ env/
 .DS_Store
 .idea/
 .vscode/
-
