@@ -4,6 +4,13 @@ test/
 metadata.csv
 sample_submission.csv
 test_mask.csv
+phase2_v2_kaggle_data/
+
+# Large model files
+mae_pretrained.pt
+
+# Downloaded external data
+link_nwb/
 
 # Common generated outputs
 submissions/
@@ -14,6 +21,16 @@ models/
 runs/
 logs/
 *.log
+phase2_outputs/
+
+# Submission CSVs (generated, not source)
+submission*.csv
+
+# Autoresearch environment
+autoresearch/
+
+# Claude Code config
+.claude/
 
 # Python cache / environments
 __pycache__/
