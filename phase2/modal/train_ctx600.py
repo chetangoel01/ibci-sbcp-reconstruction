@@ -1,15 +1,15 @@
-"""Train wide GRU (d_model=256) with ctx=800 on Modal A10G.
+"""Train GRU with ctx=600 on Modal A10G.
 
 Usage:
-    modal run --detach modal_train_gru_ctx800_wide.py
+    modal run --detach phase2/modal/train_ctx600.py
 """
 
 import modal
 
-app = modal.App("phase2-gru-ctx800-wide")
+app = modal.App("phase2-gru-ctx600")
 
 data_vol = modal.Volume.from_name("phase2-data", create_if_missing=True)
-output_vol = modal.Volume.from_name("phase2-outputs-gru-ctx800-wide", create_if_missing=True)
+output_vol = modal.Volume.from_name("phase2-outputs-gru-ctx600", create_if_missing=True)
 
 base_image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -18,18 +18,18 @@ base_image = (
 
 code_image = (
     base_image
-    .add_local_file("phase2_config.py", "/root/repo/phase2_config.py")
-    .add_local_file("phase2_data.py", "/root/repo/phase2_data.py")
-    .add_local_file("phase2_model.py", "/root/repo/phase2_model.py")
-    .add_local_file("phase2_train.py", "/root/repo/phase2_train.py")
-    .add_local_file("phase2_inference.py", "/root/repo/phase2_inference.py")
+    .add_local_file("phase2/config.py", "/root/repo/config.py")
+    .add_local_file("phase2/data.py", "/root/repo/data.py")
+    .add_local_file("phase2/model.py", "/root/repo/model.py")
+    .add_local_file("phase2/train.py", "/root/repo/train.py")
+    .add_local_file("phase2/inference.py", "/root/repo/inference.py")
 )
 
 
 @app.function(
     image=code_image,
     gpu="A10G",
-    timeout=14400,
+    timeout=10800,
     volumes={"/root/data": data_vol, "/root/outputs": output_vol},
 )
 def train_and_infer():
@@ -38,9 +38,9 @@ def train_and_infer():
 
     sys.path.insert(0, "/root/repo")
 
-    from phase2_config import Phase2Config
-    from phase2_train import train as train_fn
-    from phase2_inference import run_inference as infer_fn
+    from config import Phase2Config
+    from train import train as train_fn
+    from inference import run_inference as infer_fn
 
     data_vol.reload()
 
@@ -59,8 +59,8 @@ def train_and_infer():
         test_index_path=Path("/root/data/test_index.csv"),
         device="cuda",
         model_type="gru",
-        context_bins=800,
-        batch_size=8,
+        context_bins=600,
+        batch_size=16,
         lr=3e-4,
         epochs=80,
         warmup_epochs=5,
@@ -68,12 +68,12 @@ def train_and_infer():
         num_workers=4,
         velocity_aux_weight=0.1,
         seed=44,
-        gru_d_model=256,
+        gru_d_model=128,
         gru_n_layers=3,
         gru_dropout=0.2,
     )
 
-    print(f"Training GRU ctx={config.context_bins} d_model={config.gru_d_model}")
+    print(f"Training GRU ctx={config.context_bins} d_model={config.gru_d_model} ")
     train_fn(config)
     output_vol.commit()
 
@@ -83,7 +83,7 @@ def train_and_infer():
     output_vol.commit()
 
     print("\nDone! Download with:")
-    print("  modal volume get phase2-outputs-gru-ctx800-wide results/ .")
+    print("  modal volume get phase2-outputs-gru-ctx600 results/ .")
 
 
 @app.local_entrypoint()

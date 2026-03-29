@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,7 @@ class Phase2Config:
     sampling_rate_hz: int = 50
 
     # --- shared training ---
-    model_type: str = "transformer"  # "transformer", "poyo", or "gru"
+    model_type: str = "gru"
     context_bins: int = 50  # 1 second at 50 Hz
     batch_size: int = 64
     lr: float = 3e-4
@@ -48,33 +48,10 @@ class Phase2Config:
     val_sessions: int = 15  # chronologically last N train sessions held out
     velocity_aux_weight: float = 0.0  # auxiliary velocity loss weight (0 = disabled)
 
-    # --- SWA ---
-    swa_start_epoch: int = 0  # 0 = disabled; epoch number to begin SWA averaging
-    swa_lr: float = 1e-4  # fixed LR during SWA phase
-
-    # --- Transformer model ---
-    tf_d_model: int = 128
-    tf_n_layers: int = 6
-    tf_n_heads: int = 8
-    tf_dim_ff: int = 512
-    tf_dropout: float = 0.1
-
-    # --- POYO-Perceiver model ---
-    poyo_d_model: int = 128
-    poyo_n_latents: int = 64
-    poyo_n_self_attn_layers: int = 6
-    poyo_n_heads: int = 8
-    poyo_dim_ff: int = 512
-    poyo_dropout: float = 0.1
-
     # --- GRU model ---
     gru_d_model: int = 128
     gru_n_layers: int = 3
     gru_dropout: float = 0.2
-
-    # --- HPC ---
-    hpc_netid: str | None = None
-    hpc_scratch_root: Path | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -100,7 +77,6 @@ def _make_config(
     data_dir: Path,
     output_dir: Path,
     profile: str,
-    netid: str | None = None,
 ) -> Phase2Config:
     output_dir = output_dir.resolve()
     return Phase2Config(
@@ -117,39 +93,14 @@ def _make_config(
         sample_sub_path=(data_dir / "sample_submission.csv").resolve(),
         test_index_path=(data_dir / "test_index.csv").resolve(),
         device=_detect_device(),
-        hpc_netid=netid,
-        hpc_scratch_root=(Path(f"/scratch/{netid}/ibci-phase2") if netid else None),
     )
 
 
 def get_config(profile: str = "local") -> Phase2Config:
-    if profile == "hpc":
-        return get_hpc_config()
     repo_root = Path(__file__).resolve().parent
-    data_dir = repo_root / "phase2_v2_kaggle_data"
-    output_dir = repo_root / "phase2_outputs"
+    data_dir = repo_root / "data"
+    output_dir = repo_root / "outputs"
     return _make_config(repo_root=repo_root, data_dir=data_dir, output_dir=output_dir, profile="local")
-
-
-def get_hpc_config(netid: str | None = None) -> Phase2Config:
-    repo_root = Path(__file__).resolve().parent
-    netid = netid or os.environ.get("NETID") or os.environ.get("USER")
-    scratch_root = Path(f"/scratch/{netid}/ibci-phase2") if netid else None
-
-    slurm_tmpdir = os.environ.get("SLURM_TMPDIR")
-    staged_data_dir: Path | None = None
-    if slurm_tmpdir:
-        candidate = Path(slurm_tmpdir) / "phase2_data"
-        if candidate.exists():
-            staged_data_dir = candidate
-
-    data_dir = staged_data_dir or (scratch_root / "data" if scratch_root and scratch_root.exists() else repo_root / "phase2_v2_kaggle_data")
-    output_dir = scratch_root if scratch_root else repo_root / "phase2_outputs"
-
-    cfg = _make_config(repo_root=repo_root, data_dir=data_dir, output_dir=output_dir, profile="hpc", netid=netid)
-    if scratch_root:
-        cfg = replace(cfg, hpc_scratch_root=scratch_root.resolve())
-    return cfg
 
 
 def ensure_output_dirs(config: Phase2Config) -> None:

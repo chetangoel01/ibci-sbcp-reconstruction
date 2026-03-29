@@ -20,8 +20,8 @@ import torch
 from scipy.ndimage import gaussian_filter1d
 from torch import nn
 
-from phase2_config import Phase2Config, get_config, set_global_seeds
-from phase2_data import (
+from config import Phase2Config, get_config, set_global_seeds
+from data import (
     SessionCache,
     discover_session_ids,
     load_sample_submission,
@@ -29,7 +29,7 @@ from phase2_data import (
     load_sbp,
     get_active_mask,
 )
-from phase2_model import build_model
+from model import build_model
 
 LOGGER = logging.getLogger("phase2_inference")
 

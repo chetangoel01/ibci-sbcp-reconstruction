@@ -8,12 +8,12 @@ import pandas as pd
 import torch
 from scipy.ndimage import gaussian_filter1d
 
-from phase2_config import get_config, set_global_seeds
-from phase2_data import (
+from config import get_config, set_global_seeds
+from data import (
     discover_session_ids, load_sbp, zscore_session, get_active_mask,
     load_sample_submission,
 )
-from phase2_model import GRUDecoder
+from model import GRUDecoder
 
 
 def predict_session(model, sbp, active, ctx, device):
@@ -108,47 +108,29 @@ def main():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Device: {device}\n")
 
-    # Generate gru_wide submission (doesn't exist yet)
-    print("Generating gru_wide submission...")
-    sub_wide = generate_submission(
-        "phase2_outputs/checkpoints/gru_wide/best_gru.pt", config, device, sigma=3.0
-    )
-    sub_wide.to_csv("submission_gru_wide_d256_ctx400_sigma3.csv", index=False)
-    print(f"Saved: submission_gru_wide_d256_ctx400_sigma3.csv\n")
-
-    # Load existing submissions
-    subs = {
-        "gru_wide": sub_wide,
-        "gru_ctx800": pd.read_csv("submission_gru_ctx800_seed44_sigma3.csv"),
-        "gru_ctx600": pd.read_csv("submission_gru_ctx600_seed44_sigma3.csv"),
-        "gru_ctx400": pd.read_csv("submission_gru_ctx400_seed44_sigma3.csv"),
-        "gru_ctx200": pd.read_csv("submission_gru_ctx200_seed44_sigma3.csv"),
+    # Generate individual submissions for each model
+    models = {
+        "gru_wide": "outputs/checkpoints/gru_wide/best_gru.pt",
+        "gru_ctx800": "outputs/checkpoints/gru_ctx800/best_gru.pt",
+        "gru_ctx600": "outputs/checkpoints/gru_ctx600/best_gru.pt",
     }
 
-    # Create ensembles with optimal weights from validation
-    ensembles = [
-        ("opt_top3", {"gru_wide": 0.382, "gru_ctx800": 0.372, "gru_ctx600": 0.247}),
-        ("opt_top4", {"gru_wide": 0.380, "gru_ctx800": 0.370, "gru_ctx600": 0.245, "gru_ctx400": 0.005}),
-        ("equal_top3", {"gru_wide": 0.333, "gru_ctx800": 0.333, "gru_ctx600": 0.334}),
-        ("equal_2", {"gru_wide": 0.5, "gru_ctx800": 0.5}),
-        ("equal_top4", {"gru_wide": 0.25, "gru_ctx800": 0.25, "gru_ctx600": 0.25, "gru_ctx400": 0.25}),
-        ("equal_all5", {"gru_wide": 0.2, "gru_ctx800": 0.2, "gru_ctx600": 0.2, "gru_ctx400": 0.2, "gru_ctx200": 0.2}),
-    ]
+    subs = {}
+    for name, ckpt_path in models.items():
+        print(f"Generating {name} submission...")
+        subs[name] = generate_submission(ckpt_path, config, device, sigma=3.0)
+        fname = f"submission_{name}_sigma3.csv"
+        subs[name].to_csv(fname, index=False)
+        print(f"Saved: {fname}\n")
 
+    # Create equal-weight ensemble (best performing)
     ref = subs["gru_wide"]
-    for ens_name, weights in ensembles:
-        total_w = sum(weights.values())
-        sub = ref.copy()
-        for col in ["index_pos", "mrp_pos"]:
-            blended = sum(
-                (w / total_w) * subs[name][col].values
-                for name, w in weights.items()
-            )
-            sub[col] = np.clip(blended, 0.0, 1.0)
-        fname = f"submission_ensemble_{ens_name}.csv"
-        sub.to_csv(fname, index=False)
-        w_str = ", ".join(f"{k}={v:.3f}" for k, v in weights.items())
-        print(f"Saved: {fname}  [{w_str}]")
+    sub = ref.copy()
+    for col in ["index_pos", "mrp_pos"]:
+        blended = sum(subs[name][col].values for name in subs) / len(subs)
+        sub[col] = np.clip(blended, 0.0, 1.0)
+    sub.to_csv("submission_ensemble_equal_top3.csv", index=False)
+    print("Saved: submission_ensemble_equal_top3.csv")
 
     print("\nDone! Files ready for submission.")
 

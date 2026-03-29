@@ -8,33 +8,25 @@ import numpy as np
 import torch
 from scipy.optimize import minimize
 
-from phase2_config import get_config, set_global_seeds
-from phase2_data import SessionCache, discover_session_ids, split_train_val
-from phase2_model import GRUDecoder
+from config import get_config, set_global_seeds
+from data import SessionCache, discover_session_ids, split_train_val
+from model import GRUDecoder
 
 SEED = 44  # must match training seed so val sessions are truly held-out
 VAL_SESSIONS = 15
 
 MODELS = {
     "gru_wide": {
-        "checkpoint": "phase2_outputs/checkpoints/gru_wide/best_gru.pt",
+        "checkpoint": "outputs/checkpoints/gru_wide/best_gru.pt",
         "kaggle_r2": None,
     },
     "gru_ctx800": {
-        "checkpoint": "phase2_outputs/checkpoints/gru_ctx800/best_gru.pt",
+        "checkpoint": "outputs/checkpoints/gru_ctx800/best_gru.pt",
         "kaggle_r2": 0.6705,
     },
     "gru_ctx600": {
-        "checkpoint": "phase2_outputs/checkpoints/gru_ctx600/best_gru.pt",
+        "checkpoint": "outputs/checkpoints/gru_ctx600/best_gru.pt",
         "kaggle_r2": 0.6658,
-    },
-    "gru_ctx400": {
-        "checkpoint": "phase2_outputs/checkpoints/gru_ctx400/best_gru.pt",
-        "kaggle_r2": 0.6555,
-    },
-    "gru_ctx200": {
-        "checkpoint": "phase2_outputs/checkpoints/gru_default/best_gru.pt",
-        "kaggle_r2": None,
     },
 }
 

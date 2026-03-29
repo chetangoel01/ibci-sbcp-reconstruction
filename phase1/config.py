@@ -156,7 +156,8 @@ def get_config(profile: str = "local") -> Config:
     if profile == "hpc":
         return get_hpc_config()
     repo_root = Path(__file__).resolve().parent
-    return _make_config(repo_root=repo_root, data_dir=repo_root, output_dir=repo_root, profile="local")
+    data_dir = repo_root / "data"
+    return _make_config(repo_root=repo_root, data_dir=data_dir, output_dir=repo_root, profile="local")
 
 
 

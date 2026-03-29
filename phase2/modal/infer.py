@@ -1,19 +1,16 @@
-"""Sweep inference strategies on existing ctx=800 GRU checkpoint.
+"""Run test inference with best config from sweep on ctx=800 checkpoint.
 
-Tests combinations of:
-- Stride: ctx//2, ctx//4, ctx//8
-- TTA: off, 3 passes, 5 passes (with noise + channel dropout)
-- Smoothing: sigma 0, 3
-
-Evaluates on val set. No retraining.
+Generates two submissions:
+1. stride=ctx/8 + tta5_strong + sigma=0 (best val)
+2. stride=ctx/8 + no TTA + sigma=0 (safe fallback)
 
 Usage:
-    modal run --detach modal_sweep_inference.py
+    modal run --detach phase2/modal/infer.py
 """
 
 import modal
 
-app = modal.App("phase2-sweep-inference")
+app = modal.App("phase2-infer-best")
 
 data_vol = modal.Volume.from_name("phase2-data", create_if_missing=True)
 output_vol = modal.Volume.from_name("phase2-outputs-gru-ctx800", create_if_missing=True)
@@ -25,11 +22,11 @@ base_image = (
 
 code_image = (
     base_image
-    .add_local_file("phase2_config.py", "/root/repo/phase2_config.py")
-    .add_local_file("phase2_data.py", "/root/repo/phase2_data.py")
-    .add_local_file("phase2_model.py", "/root/repo/phase2_model.py")
-    .add_local_file("phase2_train.py", "/root/repo/phase2_train.py")
-    .add_local_file("phase2_inference.py", "/root/repo/phase2_inference.py")
+    .add_local_file("phase2/config.py", "/root/repo/config.py")
+    .add_local_file("phase2/data.py", "/root/repo/data.py")
+    .add_local_file("phase2/model.py", "/root/repo/model.py")
+    .add_local_file("phase2/train.py", "/root/repo/train.py")
+    .add_local_file("phase2/inference.py", "/root/repo/inference.py")
 )
 
 
@@ -39,20 +36,25 @@ code_image = (
     timeout=7200,
     volumes={"/root/data": data_vol, "/root/outputs": output_vol},
 )
-def sweep_inference():
+def run_best_inference():
     import sys
+    import time
+    import json
+    import datetime
     from pathlib import Path
 
     import numpy as np
+    import pandas as pd
     import torch
-    from scipy.ndimage import gaussian_filter1d
 
     sys.path.insert(0, "/root/repo")
 
-    from phase2_config import Phase2Config, set_global_seeds
-    from phase2_data import SessionCache, discover_session_ids, split_train_val
-    from phase2_model import build_model
-    from phase2_train import compute_r2
+    from config import Phase2Config, set_global_seeds
+    from data import (
+        discover_session_ids, load_sample_submission,
+        zscore_session, load_sbp, get_active_mask,
+    )
+    from model import build_model
 
     config = Phase2Config(
         profile="modal",
@@ -81,6 +83,7 @@ def sweep_inference():
     output_vol.reload()
 
     device = torch.device("cuda")
+    ctx = config.context_bins
 
     # Load model
     model = build_model(config).to(device)
@@ -90,16 +93,12 @@ def sweep_inference():
     model.train(False)
     print(f"Loaded checkpoint: epoch {ckpt['epoch']}, val_r2={ckpt.get('val_r2', '?')}")
 
-    # Load val data
-    all_train_ids = discover_session_ids(config.train_dir)
-    _, val_ids = split_train_val(all_train_ids, n_val=config.val_sessions, seed=config.seed)
-    val_cache = SessionCache(config.train_dir, val_ids, has_kinematics=True)
-    print(f"Validation sessions: {len(val_ids)}")
+    # Load test data
+    test_ids = discover_session_ids(config.test_dir)
+    sample_sub = load_sample_submission(config)
+    print(f"Test sessions: {len(test_ids)}, submission rows: {len(sample_sub)}")
 
-    ctx = config.context_bins
-
-    def predict_session_custom(sbp, active_mask, stride_div, tta_passes, noise_std, drop_frac):
-        """Predict a session with custom stride and TTA."""
+    def predict_session(sbp, active_mask, stride_div, tta_passes, noise_std, drop_frac):
         n_bins = sbp.shape[0]
         stride = max(1, ctx // stride_div)
         starts = list(range(0, n_bins - ctx + 1, stride))
@@ -124,12 +123,10 @@ def sweep_inference():
                 for s in batch_indices:
                     chunk = sbp[s:s + ctx].copy()
                     if tta_i > 0:
-                        # Add noise
                         if noise_std > 0:
                             noise = rng.randn(*chunk.shape).astype(np.float32) * noise_std
                             noise[:, ~active_mask] = 0
                             chunk = chunk + noise
-                        # Random channel dropout
                         if drop_frac > 0:
                             n_active = active_mask.sum()
                             n_drop = int(n_active * drop_frac * rng.random())
@@ -156,71 +153,62 @@ def sweep_inference():
             all_counts += 1.0
 
         all_preds /= all_counts[:, None]
-        return all_preds.astype(np.float32)
+        return np.clip(all_preds, 0.0, 1.0).astype(np.float32)
 
-    # Define sweep
-    stride_divs = [2, 4, 8]
-    tta_configs = [
-        ("no_tta", 1, 0.0, 0.0),
-        ("tta3", 3, 0.05, 0.1),
-        ("tta5", 5, 0.05, 0.1),
-        ("tta5_strong", 5, 0.1, 0.2),
+    def build_submission(all_predictions, tag):
+        sub = sample_sub.copy()
+        index_pos_arr = sub["index_pos"].values.astype(np.float64)
+        mrp_pos_arr = sub["mrp_pos"].values.astype(np.float64)
+
+        for sid in test_ids:
+            if sid not in all_predictions:
+                continue
+            pred = all_predictions[sid]
+            mask = (sub["session_id"] == sid).values
+            time_bins = sub.loc[mask, "time_bin"].values
+            valid = time_bins < len(pred)
+            row_indices = np.where(mask)[0][valid]
+            tb = time_bins[valid]
+            index_pos_arr[row_indices] = pred[tb, 0]
+            mrp_pos_arr[row_indices] = pred[tb, 1]
+
+        sub["index_pos"] = index_pos_arr
+        sub["mrp_pos"] = mrp_pos_arr
+        sub["index_pos"] = sub["index_pos"].where(np.isfinite(sub["index_pos"]), 0.5)
+        sub["mrp_pos"] = sub["mrp_pos"].where(np.isfinite(sub["mrp_pos"]), 0.5)
+
+        fname = f"submission_gru_ctx800_seed44_raw_{tag}.csv"
+        out_path = config.results_dir / fname
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        sub.to_csv(out_path, index=False)
+        print(f"Saved: {fname} ({len(sub)} rows)")
+
+    configs = [
+        ("stride8_tta5strong", 8, 5, 0.1, 0.2),
+        ("stride8_noTTA", 8, 1, 0.0, 0.0),
     ]
-    sigmas = [0, 3]
 
-    results = []
-    print(f"\n{'stride':>10} | {'tta':>12} | {'sigma':>5} | {'val_R2':>8}")
-    print("-" * 50)
+    for tag, stride_div, tta_passes, noise_std, drop_frac in configs:
+        print(f"\n--- {tag} ---")
+        t0 = time.time()
+        all_predictions = {}
+        for i, sid in enumerate(test_ids):
+            raw_sbp = load_sbp(config.test_dir, sid)
+            z_sbp, _, _ = zscore_session(raw_sbp)
+            active = get_active_mask(raw_sbp)
+            all_predictions[sid] = predict_session(
+                z_sbp, active, stride_div, tta_passes, noise_std, drop_frac
+            )
+            if (i + 1) % 25 == 0 or (i + 1) == len(test_ids):
+                print(f"  Predicted {i+1}/{len(test_ids)} sessions ({time.time()-t0:.1f}s)")
 
-    for stride_div in stride_divs:
-        for tta_name, tta_passes, noise_std, drop_frac in tta_configs:
-            # Generate raw predictions for all val sessions
-            session_preds = {}
-            for sid in val_ids:
-                sbp_np = val_cache.sbp[sid]
-                active_np = val_cache.active_masks[sid]
-                session_preds[sid] = predict_session_custom(
-                    sbp_np, active_np, stride_div, tta_passes, noise_std, drop_frac
-                )
+        build_submission(all_predictions, tag)
 
-            for sigma in sigmas:
-                all_r2 = []
-                for sid in val_ids:
-                    pred = session_preds[sid].copy()
-                    true = val_cache.kinematics[sid][:, :2]
-
-                    if sigma > 0:
-                        for c in range(2):
-                            pred[:, c] = gaussian_filter1d(pred[:, c], sigma=sigma)
-
-                    for c in range(2):
-                        r2 = compute_r2(pred[:, c], true[:, c])
-                        all_r2.append(r2)
-
-                mean_r2 = float(np.mean(all_r2))
-                results.append({
-                    "stride_div": stride_div,
-                    "tta": tta_name,
-                    "sigma": sigma,
-                    "val_r2": mean_r2,
-                })
-                print(f"  ctx/{stride_div:>3} | {tta_name:>12} | {sigma:>5} | {mean_r2:>8.4f}")
-
-    # Sort by val R2
-    results.sort(key=lambda x: x["val_r2"], reverse=True)
-    print(f"\n=== TOP 5 CONFIGS ===")
-    for r in results[:5]:
-        print(f"  stride=ctx/{r['stride_div']}, {r['tta']}, sigma={r['sigma']} -> val_R2={r['val_r2']:.4f}")
-
-    best = results[0]
-    print(f"\nBest: stride=ctx/{best['stride_div']}, {best['tta']}, sigma={best['sigma']} -> val_R2={best['val_r2']:.4f}")
-
-    return results
+    output_vol.commit()
+    print("\nDone! Download with:")
+    print("  modal volume get phase2-outputs-gru-ctx800 results/ .")
 
 
 @app.local_entrypoint()
 def main():
-    results = sweep_inference.remote()
-    print("\n=== FULL RESULTS ===")
-    for r in sorted(results, key=lambda x: -x["val_r2"]):
-        print(f"  stride=ctx/{r['stride_div']}, {r['tta']:>12}, sigma={r['sigma']} -> val_R2={r['val_r2']:.4f}")
+    run_best_inference.remote()

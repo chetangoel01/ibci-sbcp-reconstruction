@@ -11,7 +11,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from phase2_config import Phase2Config
+from config import Phase2Config
 
 LOGGER = logging.getLogger(__name__)
 

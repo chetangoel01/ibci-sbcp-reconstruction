@@ -1,9 +1,7 @@
-"""Training script for Phase 2 kinematic decoding.
+"""Training script for Phase 2 kinematic decoding (GRU).
 
 Usage:
-    python phase2_train.py --model transformer --epochs 60
-    python phase2_train.py --model poyo --epochs 60
-    python phase2_train.py --model transformer --profile hpc
+    python train.py --epochs 80 --context_bins 800 --seed 44
 """
 
 from __future__ import annotations
@@ -21,14 +19,14 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from phase2_config import Phase2Config, ensure_output_dirs, get_config, set_global_seeds
-from phase2_data import (
+from config import Phase2Config, ensure_output_dirs, get_config, set_global_seeds
+from data import (
     SessionCache,
     SlidingWindowDataset,
     discover_session_ids,
     split_train_val,
 )
-from phase2_model import build_model
+from model import build_model
 
 LOGGER = logging.getLogger("phase2_train")
 
@@ -166,15 +164,6 @@ def train(config: Phase2Config) -> None:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # --- SWA setup ---
-    swa_model = None
-    swa_scheduler = None
-    if config.swa_start_epoch > 0:
-        from torch.optim.swa_utils import AveragedModel, SWALR
-        swa_model = AveragedModel(model)
-        swa_scheduler = SWALR(optimizer, swa_lr=config.swa_lr, anneal_epochs=5, anneal_strategy="cos")
-        LOGGER.info("SWA enabled: starts at epoch %d, swa_lr=%.2e", config.swa_start_epoch, config.swa_lr)
-
     # --- Training state ---
     best_val_r2 = -float("inf")
     history: list[dict] = []
@@ -209,26 +198,19 @@ def train(config: Phase2Config) -> None:
             epoch_loss += loss.item()
             n_batches += 1
 
-        in_swa_phase = swa_model is not None and (epoch + 1) >= config.swa_start_epoch
-        if in_swa_phase:
-            swa_model.update_parameters(model)
-            swa_scheduler.step()
-        else:
-            scheduler.step()
+        scheduler.step()
 
         avg_loss = epoch_loss / max(n_batches, 1)
         elapsed = time.time() - t0
 
         # --- Validation ---
-        eval_model = swa_model if in_swa_phase else model
-        val_r2, per_session_r2 = validate(eval_model, val_cache, val_ids, config, device)
+        val_r2, per_session_r2 = validate(model, val_cache, val_ids, config, device)
 
         is_best = val_r2 > best_val_r2
         if is_best:
             best_val_r2 = val_r2
-            save_state = swa_model.module.state_dict() if in_swa_phase else model.state_dict()
             torch.save(
-                {"epoch": epoch, "model_state_dict": save_state, "val_r2": val_r2, "config": config.as_dict()},
+                {"epoch": epoch, "model_state_dict": model.state_dict(), "val_r2": val_r2, "config": config.as_dict()},
                 config.checkpoints_dir / f"best_{config.model_type}.pt",
             )
 
@@ -245,9 +227,8 @@ def train(config: Phase2Config) -> None:
 
         # Save latest checkpoint periodically
         if (epoch + 1) % 5 == 0 or (epoch + 1) == config.epochs:
-            save_state = swa_model.module.state_dict() if in_swa_phase else model.state_dict()
             torch.save(
-                {"epoch": epoch, "model_state_dict": save_state, "val_r2": val_r2, "config": config.as_dict()},
+                {"epoch": epoch, "model_state_dict": model.state_dict(), "val_r2": val_r2, "config": config.as_dict()},
                 config.checkpoints_dir / f"latest_{config.model_type}.pt",
             )
 
@@ -263,9 +244,7 @@ def train(config: Phase2Config) -> None:
 # ---------------------------------------------------------------------------
 
 def parse_args() -> Phase2Config:
-    parser = argparse.ArgumentParser(description="Phase 2 training")
-    parser.add_argument("--model", choices=["transformer", "poyo"], default="transformer")
-    parser.add_argument("--profile", choices=["local", "hpc"], default="local")
+    parser = argparse.ArgumentParser(description="Phase 2 GRU training")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
@@ -273,17 +252,15 @@ def parse_args() -> Phase2Config:
     parser.add_argument("--val_sessions", type=int, default=None)
     parser.add_argument("--velocity_aux", type=float, default=None, help="Velocity auxiliary loss weight")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--d_model", type=int, default=None, help="Transformer d_model")
-    parser.add_argument("--n_layers", type=int, default=None, help="Transformer n_layers")
-    parser.add_argument("--n_heads", type=int, default=None, help="Transformer n_heads")
-    parser.add_argument("--dim_ff", type=int, default=None, help="Transformer feedforward dim")
-    parser.add_argument("--dropout", type=float, default=None, help="Transformer dropout")
+    parser.add_argument("--d_model", type=int, default=None, help="GRU d_model")
+    parser.add_argument("--n_layers", type=int, default=None, help="GRU n_layers")
+    parser.add_argument("--dropout", type=float, default=None, help="GRU dropout")
     parser.add_argument("--warmup_epochs", type=int, default=None)
     args = parser.parse_args()
 
-    config = get_config(args.profile)
+    config = get_config("local")
 
-    overrides: dict = {"model_type": args.model}
+    overrides: dict = {"model_type": "gru"}
     if args.epochs is not None:
         overrides["epochs"] = args.epochs
     if args.lr is not None:
@@ -299,15 +276,11 @@ def parse_args() -> Phase2Config:
     if args.seed is not None:
         overrides["seed"] = args.seed
     if args.d_model is not None:
-        overrides["tf_d_model"] = args.d_model
+        overrides["gru_d_model"] = args.d_model
     if args.n_layers is not None:
-        overrides["tf_n_layers"] = args.n_layers
-    if args.n_heads is not None:
-        overrides["tf_n_heads"] = args.n_heads
-    if args.dim_ff is not None:
-        overrides["tf_dim_ff"] = args.dim_ff
+        overrides["gru_n_layers"] = args.n_layers
     if args.dropout is not None:
-        overrides["tf_dropout"] = args.dropout
+        overrides["gru_dropout"] = args.dropout
     if args.warmup_epochs is not None:
         overrides["warmup_epochs"] = args.warmup_epochs
 

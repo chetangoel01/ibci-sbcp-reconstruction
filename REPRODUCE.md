@@ -17,7 +17,7 @@ The best submission is an equal-weight ensemble of three GRU models with differe
 pip install torch numpy pandas scipy tqdm
 ```
 
-Data: place the Phase 2 Kaggle dataset in `phase2_v2_kaggle_data/` with `train/` and `test/` subdirectories containing `{session_id}_sbp.npy` and `{session_id}_kinematics.npy` files.
+Data: place the Phase 2 Kaggle dataset in `phase2/data/` with `train/` and `test/` subdirectories containing `{session_id}_sbp.npy` and `{session_id}_kinematics.npy` files.
 
 ## Step 1: Train the Three Models
 
@@ -26,33 +26,33 @@ Each model trains for 80 epochs (~1-2 hours on A10G). All use seed=44, AdamW, co
 ### Option A: Modal (recommended)
 
 ```bash
-modal run --detach modal_train_gru_ctx800.py
-modal run --detach modal_train_gru_ctx600.py
-modal run --detach modal_train_gru_wide.py
+modal run --detach phase2/modal/train_ctx800.py
+modal run --detach phase2/modal/train_ctx600.py
+modal run --detach phase2/modal/train_wide.py
 ```
 
 Download checkpoints when done:
 
 ```bash
-mkdir -p phase2_outputs/checkpoints/{gru_ctx800,gru_ctx600,gru_wide}
-modal volume get phase2-outputs-gru-ctx800 checkpoints/best_gru.pt phase2_outputs/checkpoints/gru_ctx800/best_gru.pt
-modal volume get phase2-outputs-gru-ctx600 checkpoints/best_gru.pt phase2_outputs/checkpoints/gru_ctx600/best_gru.pt
-modal volume get phase2-outputs-gru-wide checkpoints/best_gru.pt phase2_outputs/checkpoints/gru_wide/best_gru.pt
+mkdir -p phase2/outputs/checkpoints/{gru_ctx800,gru_ctx600,gru_wide}
+modal volume get phase2-outputs-gru-ctx800 checkpoints/best_gru.pt phase2/outputs/checkpoints/gru_ctx800/best_gru.pt
+modal volume get phase2-outputs-gru-ctx600 checkpoints/best_gru.pt phase2/outputs/checkpoints/gru_ctx600/best_gru.pt
+modal volume get phase2-outputs-gru-wide checkpoints/best_gru.pt phase2/outputs/checkpoints/gru_wide/best_gru.pt
 ```
 
-### Option B: Local / HPC
+### Option B: Local
 
 ```bash
-python phase2_train.py --model gru --context_bins 800 --seed 44 --epochs 80 --d_model 128
-python phase2_train.py --model gru --context_bins 600 --seed 44 --epochs 80 --d_model 128
-python phase2_train.py --model gru --context_bins 400 --seed 44 --epochs 80 --d_model 256
+cd phase2
+python train.py --context_bins 800 --seed 44 --epochs 80 --d_model 128 --batch_size 16
+python train.py --context_bins 600 --seed 44 --epochs 80 --d_model 128 --batch_size 16
+python train.py --context_bins 400 --seed 44 --epochs 80 --d_model 256 --batch_size 32
 ```
-
-Note: the local training script uses default `gru_d_model=128`. For the wide model (d=256), use the Modal script or modify the config.
 
 ## Step 2: Generate Individual Submissions
 
 ```bash
+cd phase2
 python generate_submissions.py
 ```
 
@@ -61,12 +61,13 @@ This script:
 2. Runs overlap-tiled inference on all 125 test sessions with stride = ctx/2
 3. Applies sigma=3 Gaussian smoothing
 4. Clips predictions to [0, 1]
-5. Produces individual CSVs and ensemble CSVs
+5. Produces individual CSVs and the ensemble CSV
 
 ## Step 3: Verify Ensemble on Validation Set (optional)
 
 ```bash
-python validate_ensemble_fast.py
+cd phase2
+python validate_ensemble.py
 ```
 
 Uses the same seed=44 val split (15 held-out sessions) as training. Expected output:

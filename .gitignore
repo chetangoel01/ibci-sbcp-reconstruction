@@ -1,33 +1,17 @@
-# Kaggle competition raw data (large)
-train/
-test/
-metadata.csv
-sample_submission.csv
-test_mask.csv
-phase2_v2_kaggle_data/
+# Phase 1 data
+phase1/data/
 
-# Large model files
-mae_pretrained.pt
+# Phase 2 data
+phase2/data/
 
-# Downloaded external data
-link_nwb/
+# Model outputs (checkpoints, results, logs)
+phase2/outputs/
 
-# Common generated outputs
-submissions/
-outputs/
-artifacts/
-checkpoints/
-models/
-runs/
-logs/
-*.log
-phase2_outputs/
-
-# Submission CSVs (generated, not source)
+# Submission CSVs (generated)
 submission*.csv
 
-# Autoresearch environment
-autoresearch/
+# Large model files
+*.pt
 
 # Claude Code config
 .claude/
@@ -47,4 +31,3 @@ env/
 .DS_Store
 .idea/
 .vscode/
-
